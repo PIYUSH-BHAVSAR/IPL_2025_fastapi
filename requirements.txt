@@ -11,3 +11,4 @@ tensorflow
 fastapi
 uvicorn
 gunicorn
+python-multipart
