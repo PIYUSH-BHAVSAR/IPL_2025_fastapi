@@ -22,3 +22,8 @@ async def upload_points_table(file: UploadFile = File(...)):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# Only run if file is executed directly (not on import)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))  # Default to 8080 if PORT not set
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
