@@ -15,32 +15,22 @@ import optuna
 from tqdm import tqdm
 import warnings
 import tensorflow as tf
-from fastapi.encoders import jsonable_encoder
-import os
-
 warnings.filterwarnings('ignore')
 
 # 1. Data Loading and Initial Exploration
-
 def load_data():
     print("Loading datasets...")
-
-    # Get base directory of the current file (last_try.py)
-    base_dir = os.path.dirname(__file__)
-    data_dir = os.path.join(base_dir, 'data')
-
-    # Load datasets using relative paths
-    matches_df = pd.read_csv(os.path.join(data_dir, 'Final_Dataset.csv'))
-    deliveries_df = pd.read_csv(os.path.join(data_dir, 'deliveries_cleaned.csv'))
+    matches_df = pd.read_csv('Final_Dataset.csv')
+    deliveries_df = pd.read_csv('deliveries_cleaned.csv')
     
-
     print(f"Matches dataset shape: {matches_df.shape}")
     print(f"Deliveries dataset shape: {deliveries_df.shape}")
     
     # Convert date to datetime
     matches_df['date'] = pd.to_datetime(matches_df['date'])
-
+    
     return matches_df, deliveries_df
+
 # 2. Exploratory Data Analysis
 def perform_eda(matches_df, deliveries_df):
     print("\nPerforming exploratory data analysis...")
@@ -75,292 +65,16 @@ def perform_eda(matches_df, deliveries_df):
     
     return
 
-def calculate_team_consistency(matches, team):
-    """Calculate consistency statistics for a team"""
-    team_seasons = matches[
-        ((matches['team1'] == team) | (matches['team2'] == team))
-    ]['season'].unique()
-    
-    season_wise_percentages = []
-    season_patterns = []
-    current_streak = 0
-    streak_type = None
-    
-    for season in sorted(team_seasons):
-        season_matches = matches[
-            (matches['season'] == season) & 
-            ((matches['team1'] == team) | (matches['team2'] == team))
-        ].sort_values('date')
-        
-        # Calculate basic season statistics
-        wins = season_matches[season_matches['winner'] == team].shape[0]
-        total = season_matches.shape[0]
-        win_percentage = (wins / total * 100) if total > 0 else 0
-        season_wise_percentages.append(win_percentage)
-        
-        # Calculate winning patterns
-        results = []
-        for _, match in season_matches.iterrows():
-            if match['winner'] == team:
-                results.append('W')
-                if streak_type == 'W':
-                    current_streak += 1
-                else:
-                    streak_type = 'W'
-                    current_streak = 1
-            else:
-                results.append('L')
-                if streak_type == 'L':
-                    current_streak += 1
-                else:
-                    streak_type = 'L'
-                    current_streak = 1
-        
-        # Calculate season pattern metrics
-        win_streaks = [len(list(g)) for k, g in itertools.groupby(results) if k == 'W']
-        loss_streaks = [len(list(g)) for k, g in itertools.groupby(results) if k == 'L']
-        
-        season_patterns.append({
-            'season': season,
-            'max_win_streak': max(win_streaks) if win_streaks else 0,
-            'max_loss_streak': max(loss_streaks) if loss_streaks else 0,
-            'avg_win_streak': np.mean(win_streaks) if win_streaks else 0,
-            'avg_loss_streak': np.mean(loss_streaks) if loss_streaks else 0,
-            'pattern_volatility': len(list(itertools.groupby(results)))
-        })
-    
-    # Calculate overall statistics
-    total_matches = len(matches[((matches['team1'] == team) | (matches['team2'] == team))])
-    total_wins = len(matches[matches['winner'] == team])
-    overall_win_percentage = (total_wins / total_matches * 100) if total_matches > 0 else 0
-    win_percentage_variance = np.var(season_wise_percentages) if season_wise_percentages else 0
-    
-    return {
-        'overall_win_percentage': overall_win_percentage,
-        'win_variance': win_percentage_variance,
-        'is_consistent': 1 if win_percentage_variance < 100 else 0,
-        'season_patterns': season_patterns,
-        'current_streak_length': current_streak,
-        'current_streak_type': streak_type,
-        'avg_max_win_streak': np.mean([p['max_win_streak'] for p in season_patterns]),
-        'avg_max_loss_streak': np.mean([p['max_loss_streak'] for p in season_patterns]),
-        'pattern_consistency': np.std([p['pattern_volatility'] for p in season_patterns])
-    }
-
-def get_recent_form(matches, team, season, n=5):
-    """Calculate recent form for a team"""
-    past_matches = matches[(matches['season'] < season) & 
-                         ((matches['team1'] == team) | (matches['team2'] == team))]
-    past_matches = past_matches.sort_values('date', ascending=False).head(n)
-    
-    wins = len(past_matches[past_matches['winner'] == team])
-    total_matches = len(past_matches)
-    win_percentage = (wins / total_matches * 100) if total_matches > 0 else 0
-    
-    current_streak = 0
-    streak_type = None
-    if total_matches > 0:
-        for _, match in past_matches.iterrows():
-            if match['winner'] == team:
-                if streak_type == 'W':
-                    current_streak += 1
-                else:
-                    streak_type = 'W'
-                    current_streak = 1
-            else:
-                if streak_type == 'L':
-                    current_streak += 1
-                else:
-                    streak_type = 'L'
-                    current_streak = 1
-    
-    return {
-        'win_percentage': win_percentage,
-        'current_streak': current_streak if streak_type == 'W' else -current_streak
-    }
-
-def calculate_venue_stats(matches, deliveries):
-    """Calculate statistics for each venue"""
-    venue_stats = {}
-    for venue in matches['venue'].unique():
-        venue_matches = matches[matches['venue'] == venue]
-        venue_deliveries = deliveries[deliveries['match_id'].isin(venue_matches['match_id'])]
-        
-        # Calculate first innings scores
-        first_innings_scores = []
-        for match_id in venue_deliveries[venue_deliveries['inning'] == 1]['match_id'].unique():
-            total_score = venue_deliveries[
-                (venue_deliveries['match_id'] == match_id) & 
-                (venue_deliveries['inning'] == 1)
-            ]['total_runs'].sum()
-            first_innings_scores.append(total_score)
-        
-        # Calculate batting first win percentage
-        batting_first_matches = venue_matches[venue_matches['toss_decision'] == 'bat']
-        batting_first_wins = len(batting_first_matches[
-            batting_first_matches['toss_winner'] == batting_first_matches['winner']
-        ])
-        batting_first_win_percentage = (
-            batting_first_wins / len(batting_first_matches) * 100 
-            if len(batting_first_matches) > 0 else 0
-        )
-        
-        venue_stats[venue] = {
-            'total_matches': len(venue_matches),
-            'avg_first_innings_score': np.mean(first_innings_scores) if first_innings_scores else 0,
-            'batting_first_win_percentage': batting_first_win_percentage
-        }
-    
-    return venue_stats
-
 # 3. Feature Engineering
 # Import point table extractor
 from point_table_extractor import extract_point_table, get_team_form_metrics, get_head_to_head_stats
 
-def analyze_current_season(matches_df, points_table_df):
-    """
-    Analyze current season data and return updated predictions
-    """
-    # Get current season point table
-     # Use actual points table
-    point_table = points_table_df
-    
-    # Filter out eliminated teams (teams with no mathematical chance)
-    max_possible_points = {
-        team: points + (remaining * 2) 
-        for team, points, remaining in zip(
-            point_table['Team'], 
-            point_table['Points'], 
-            point_table['Remaining_Matches']
-        )
-    }
-
-    # Determine eliminated teams
-    current_max_points = point_table['Points'].max()
-    eliminated_teams = []
-    for team in point_table['Team']:
-        if max_possible_points[team] < current_max_points:
-            eliminated_teams.append(team)
-        
-    
-    # Get remaining matches for each team
-    remaining_matches_info = {}
-    for team in point_table['Team']:
-        if team not in eliminated_teams:
-            remaining = point_table [point_table['Team'] == team]['Remaining_Matches'].iloc[0]
-
-            opponents = []
-            future_matches = matches_df[
-                (matches_df['season'] == 2025) & ((matches_df['team1'] == team) | (matches_df['team2'] == team)) &
-                (matches_df['winner'].isna())  # Matches without results are upcoming
-            ]
-
-            for _, match in future_matches.iterrows():
-                opponent = match['team2'] if match['team1'] == team else match['team1']
-                opponents.append(opponent)
-
-            remaining_matches_info[team] = {
-                'matches_remaining': remaining,
-                'opponents': opponents,
-                'current_points': point_table[point_table['Team'] == team]['Points'].iloc[0],
-                'nrr': point_table[point_table['Team'] == team]['NRR'].iloc[0],
-                'max_possible_points': max_possible_points[team]
-            }
-
-
-    
-    return {
-        'point_table': point_table,
-        'eliminated_teams': eliminated_teams,
-        'remaining_matches': remaining_matches_info
-    }
-
-def predict_playoffs(matches_df, model, features_df, points_table_df):
-    """
-    Predict playoff teams considering current season data
-    """
-    # Get current season analysis
-    current_season_data = analyze_current_season(matches_df, points_table_df)
-    
-    # Filter out eliminated teams
-    valid_teams = [team for team in current_season_data['point_table']['Team'] 
-                  if team not in current_season_data['eliminated_teams']]
-    
-    # Make predictions considering current form and remaining matches
-    team_chances = {}
-    for team in valid_teams:
-        # Get team's current data from points table
-        team_data = current_season_data['remaining_matches'].get(team, {})
-        current_points = team_data.get('current_points', 0)
-        nrr = team_data.get('nrr', 0)
-        
-        # Create a sample dataframe for prediction
-        team_features = features_df[features_df['team1'] == team].copy()
-        
-        # Convert categorical columns to numeric using one-hot encoding
-        categorical_cols = ['team1', 'team2', 'venue', 'toss_winner', 'toss_decision']
-        team_data_encoded = pd.get_dummies(team_features, columns=categorical_cols)
-        
-        # Handle feature names based on model type
-        if hasattr(model, 'feature_names_'):
-            feature_names = model.feature_names_
-        elif hasattr(model, 'feature_name_'):
-            feature_names = model.feature_name_
-        else:
-            feature_names = team_data_encoded.columns
-        
-        # Ensure all columns from training are present
-        for col in feature_names:
-            if col not in team_data_encoded.columns:
-                team_data_encoded[col] = 0
-                
-        # Select only the features used during training
-        X_pred = team_data_encoded[feature_names]
-        
-        # Calculate weighted probability considering points and NRR
-        points_weight = 0.4
-        nrr_weight = 0.2
-        model_weight = 0.4
-        
-        # Normalize points (assuming max possible points is 20)
-        points_probability = current_points / 20
-        
-        # Normalize NRR (typical range is -2 to 2)
-        nrr_normalized = (nrr + 2) / 4
-        
-        # Get model probability
-        model_probability = model.predict_proba(X_pred)[0][1] if len(X_pred) > 0 else 0.5
-        
-        # Calculate final weighted probability
-        weighted_probability = (
-            (points_weight * points_probability) + 
-            (nrr_weight * nrr_normalized) + 
-            (model_weight * model_probability)
-        )
-        
-        team_chances[team] = weighted_probability
-    
-    # Sort teams by probability and get top 4
-    playoff_teams = sorted(team_chances.items(), key=lambda x: x[1], reverse=True)[:4]
-    
-    return [team for team, _ in playoff_teams]
-
 def engineer_features(matches_df, deliveries_df):
-    """Main feature engineering function"""
     print("\nEngineering features...")
     
+    # Create a copy of the dataframes
     matches = matches_df.copy()
     deliveries = deliveries_df.copy()
-    
-    # Calculate team consistency stats first
-    teams = set(matches['team1'].unique()) | set(matches['team2'].unique())
-    team_consistency_stats = {
-        team: calculate_team_consistency(matches, team) 
-        for team in tqdm(teams, desc="Calculating team consistency")
-    }
-    
-    # Calculate venue stats
-    venue_stats = calculate_venue_stats(matches, deliveries)
     
     # Extract current season's point table
     current_point_table = extract_point_table(matches)
@@ -583,33 +297,12 @@ def engineer_features(matches_df, deliveries_df):
         
         # Calculate wins in recent matches
         wins = past_matches[past_matches['winner'] == team].shape[0]
-        total_matches = len(past_matches)
+        if len(past_matches) > 0:
+            win_rate = wins / len(past_matches)
+        else:
+            win_rate = 0
         
-        # Calculate win percentage and current streak
-        win_percentage = (wins / total_matches * 100) if total_matches > 0 else 0
-        
-        # Calculate current streak
-        current_streak = 0
-        streak_type = None
-        if total_matches > 0:
-            for _, match in past_matches.iterrows():
-                if match['winner'] == team:
-                    if streak_type == 'W':
-                        current_streak += 1
-                    else:
-                        streak_type = 'W'
-                        current_streak = 1
-                else:
-                    if streak_type == 'L':
-                        current_streak += 1
-                    else:
-                        streak_type = 'L'
-                        current_streak = 1
-        
-        return {
-            'win_percentage': win_percentage,
-            'current_streak': current_streak if streak_type == 'W' else -current_streak
-        }
+        return win_rate
     
     # Create a list to store match features
     match_features = []
@@ -618,8 +311,7 @@ def engineer_features(matches_df, deliveries_df):
     for _, match in tqdm(matches.iterrows(), total=matches.shape[0], desc="Creating match features"):
         # Get current season point table data if match is from 2025
         if match['season'] == 2025:
-            team1_form = get_team_form_metrics(matches, match['team1'])
-            team2_form = get_team_form_metrics(matches, match['team2'])
+            
             head_to_head = get_head_to_head_stats(matches, match['team1'], match['team2'])
             
             # Get team standings from point table
@@ -662,9 +354,7 @@ def engineer_features(matches_df, deliveries_df):
                 'batting_first_win_percentage': 0
             }
         
-        # Recent form features
-        team1_form = get_recent_form(team1, season)
-        team2_form = get_recent_form(team2, season)
+       
         
         # Create a feature dictionary for this match
         match_feature = {
@@ -683,17 +373,13 @@ def engineer_features(matches_df, deliveries_df):
             'venue_total_matches': venue_features['total_matches'],
             'venue_avg_first_innings_score': venue_features['avg_first_innings_score'],
             'venue_batting_first_win_percentage': venue_features['batting_first_win_percentage'],
-            'team1_recent_form': team1_form['win_percentage'],
-            'team2_recent_form': team2_form['win_percentage'],
+         
             # Add current season performance metrics if available
             'team1_current_points': team1_standing['points'] if match['season'] == 2025 else 0,
             'team2_current_points': team2_standing['points'] if match['season'] == 2025 else 0,
             'team1_current_nrr': team1_standing['net_run_rate'] if match['season'] == 2025 else 0,
             'team2_current_nrr': team2_standing['net_run_rate'] if match['season'] == 2025 else 0,
-            'team1_current_win_percentage': team1_form['win_percentage'] if match['season'] == 2025 else 0,
-            'team2_current_win_percentage': team2_form['win_percentage'] if match['season'] == 2025 else 0,
-            'team1_current_streak': team1_form['current_streak'] if match['season'] == 2025 else 0,
-            'team2_current_streak': team2_form['current_streak'] if match['season'] == 2025 else 0,
+        
             'current_season_h2h_matches': head_to_head['total_matches'] if match['season'] == 2025 else 0,
             'team1_current_season_h2h_wins': head_to_head['team1_wins'] if match['season'] == 2025 else 0,
             'team2_current_season_h2h_wins': head_to_head['team2_wins'] if match['season'] == 2025 else 0,
@@ -707,8 +393,7 @@ def engineer_features(matches_df, deliveries_df):
             'team2_current_streak_length': team_consistency_stats[team2].get('current_streak_length', 0),
             'team1_avg_max_win_streak': team_consistency_stats[team1].get('avg_max_win_streak', 0),
             'team2_avg_max_win_streak': team_consistency_stats[team2].get('avg_max_win_streak', 0),
-            'team1_avg_max_loss_streak': team_consistency_stats[team1].get('avg_max_loss_streak', 0),
-            'team2_avg_max_loss_streak': team_consistency_stats[team2].get('avg_max_loss_streak', 0),
+            
             'team1_pattern_consistency': team_consistency_stats[team1].get('pattern_consistency', 0),
             'team2_pattern_consistency': team_consistency_stats[team2].get('pattern_consistency', 0),
             'winner': match['winner'] if pd.notna(match['winner']) else None
@@ -843,8 +528,7 @@ def engineer_features(matches_df, deliveries_df):
             }
         
         # Recent form features
-        team1_form = get_recent_form(team1, season)
-        team2_form = get_recent_form(team2, season)
+       
         
         # Create a feature dictionary for this match
         match_feature = {
@@ -863,17 +547,13 @@ def engineer_features(matches_df, deliveries_df):
             'venue_total_matches': venue_features['total_matches'],
             'venue_avg_first_innings_score': venue_features['avg_first_innings_score'],
             'venue_batting_first_win_percentage': venue_features['batting_first_win_percentage'],
-            'team1_recent_form': team1_form['win_percentage'],
-            'team2_recent_form': team2_form['win_percentage'],
+           
             # Add current season performance metrics if available
             'team1_current_points': team1_standing['points'] if match['season'] == 2025 else 0,
             'team2_current_points': team2_standing['points'] if match['season'] == 2025 else 0,
             'team1_current_nrr': team1_standing['net_run_rate'] if match['season'] == 2025 else 0,
             'team2_current_nrr': team2_standing['net_run_rate'] if match['season'] == 2025 else 0,
-            'team1_current_win_percentage': team1_form['win_percentage'] if match['season'] == 2025 else 0,
-            'team2_current_win_percentage': team2_form['win_percentage'] if match['season'] == 2025 else 0,
-            'team1_current_streak': team1_form['current_streak'] if match['season'] == 2025 else 0,
-            'team2_current_streak': team2_form['current_streak'] if match['season'] == 2025 else 0,
+            
             'current_season_h2h_matches': head_to_head['total_matches'] if match['season'] == 2025 else 0,
             'team1_current_season_h2h_wins': head_to_head['team1_wins'] if match['season'] == 2025 else 0,
             'team2_current_season_h2h_wins': head_to_head['team2_wins'] if match['season'] == 2025 else 0,
@@ -887,8 +567,7 @@ def engineer_features(matches_df, deliveries_df):
             'team2_current_streak_length': team_consistency_stats[team2].get('current_streak_length', 0),
             'team1_avg_max_win_streak': team_consistency_stats[team1].get('avg_max_win_streak', 0),
             'team2_avg_max_win_streak': team_consistency_stats[team2].get('avg_max_win_streak', 0),
-            'team1_avg_max_loss_streak': team_consistency_stats[team1].get('avg_max_loss_streak', 0),
-            'team2_avg_max_loss_streak': team_consistency_stats[team2].get('avg_max_loss_streak', 0),
+            
             'team1_pattern_consistency': team_consistency_stats[team1].get('pattern_consistency', 0),
             'team2_pattern_consistency': team_consistency_stats[team2].get('pattern_consistency', 0),
             'winner': match['winner'] if pd.notna(match['winner']) else None
@@ -1180,17 +859,7 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     model_results = {}
     
     # 1. Random Forest
-    from sklearn.ensemble import RandomForestClassifier
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-    rf_model.fit(X_train, y_train)
-    rf_pred = rf_model.predict(X_test)
-    rf_scores = {
-        'accuracy': accuracy_score(y_test, rf_pred),
-        'precision': precision_score(y_test, rf_pred, average='weighted'),
-        'recall': recall_score(y_test, rf_pred, average='weighted'),
-        'f1': f1_score(y_test, rf_pred, average='weighted')
-    }
-    model_results['Random Forest'] = rf_scores
+   
     
     # 2. XGBoost
     import xgboost as xgb
@@ -1206,80 +875,21 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     model_results['XGBoost'] = xgb_scores
     
     # 3. Gradient Boosting
-    from sklearn.ensemble import GradientBoostingClassifier
-    gb_model = GradientBoostingClassifier(random_state=42)
-    gb_model.fit(X_train, y_train)
-    gb_pred = gb_model.predict(X_test)
-    gb_scores = {
-        'accuracy': accuracy_score(y_test, gb_pred),
-        'precision': precision_score(y_test, gb_pred, average='weighted'),
-        'recall': recall_score(y_test, gb_pred, average='weighted'),
-        'f1': f1_score(y_test, gb_pred, average='weighted')
-    }
-    model_results['Gradient Boosting'] = gb_scores
+   
     
     # 4. Support Vector Machine
-    from sklearn.svm import SVC
-    svm_model = SVC(random_state=42, probability=True)
-    svm_model.fit(X_train, y_train)
-    svm_pred = svm_model.predict(X_test)
-    svm_scores = {
-        'accuracy': accuracy_score(y_test, svm_pred),
-        'precision': precision_score(y_test, svm_pred, average='weighted'),
-        'recall': recall_score(y_test, svm_pred, average='weighted'),
-        'f1': f1_score(y_test, svm_pred, average='weighted')
-    }
-    model_results['SVM'] = svm_scores
+  
     
     # 5. Decision Tree
-    from sklearn.tree import DecisionTreeClassifier
-    dt_model = DecisionTreeClassifier(random_state=42)
-    dt_model.fit(X_train, y_train)
-    dt_pred = dt_model.predict(X_test)
-    dt_scores = {
-        'accuracy': accuracy_score(y_test, dt_pred),
-        'precision': precision_score(y_test, dt_pred, average='weighted'),
-        'recall': recall_score(y_test, dt_pred, average='weighted'),
-        'f1': f1_score(y_test, dt_pred, average='weighted')
-    }
-    model_results['Decision Tree'] = dt_scores
+   
     
     # 6. RNN (using Keras)
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import SimpleRNN, Dense
-    rnn_model = Sequential([
-        SimpleRNN(64, input_shape=(X_train.shape[1], 1)),
-        Dense(32, activation='relu'),
-        Dense(len(np.unique(y_train)), activation='softmax')
-    ])
-    rnn_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     
-    # Reshape data for RNN
-    X_train_rnn = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-    X_test_rnn = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
     
-    rnn_model.fit(X_train_rnn, y_train, epochs=10, batch_size=32, verbose=0)
-    rnn_pred = np.argmax(rnn_model.predict(X_test_rnn), axis=1)
-    rnn_scores = {
-        'accuracy': accuracy_score(y_test, rnn_pred),
-        'precision': precision_score(y_test, rnn_pred, average='weighted'),
-        'recall': recall_score(y_test, rnn_pred, average='weighted'),
-        'f1': f1_score(y_test, rnn_pred, average='weighted')
-    }
-    model_results['RNN'] = rnn_scores
+    
     
     # 7. LightGBM
-    import lightgbm as lgb
-    lgb_model = lgb.LGBMClassifier(random_state=42)
-    lgb_model.fit(X_train, y_train)
-    lgb_pred = lgb_model.predict(X_test)
-    lgb_scores = {
-        'accuracy': accuracy_score(y_test, lgb_pred),
-        'precision': precision_score(y_test, lgb_pred, average='weighted'),
-        'recall': recall_score(y_test, lgb_pred, average='weighted'),
-        'f1': f1_score(y_test, lgb_pred, average='weighted')
-    }
-    model_results['LightGBM'] = lgb_scores
+    
     
     # Compare models
     print("\nModel Comparison:")
@@ -1305,155 +915,38 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
 
 # 4. Model Training
 def train_model(features_df):
-    print("\nTraining prediction models...")
-    
-    # Filter out matches with no winner
-    features_df = features_df.dropna(subset=['winner'])
-    
-    # Create target variable
-    features_df['target'] = (features_df['winner'] == features_df['team1']).astype(int)
-    
-    # Split data by season for time-based validation
-    train_data = features_df[features_df['season'] < 2024]
-    validation_data = features_df[features_df['season'] == 2024]
-    
-    if validation_data.empty:
-        # If no 2024 data available, use the latest available season for validation
-        max_season = features_df['season'].max()
-        validation_data = features_df[features_df['season'] == max_season]
-        train_data = features_df[features_df['season'] < max_season]
-    
-    # Initialize feature columns list with all features
-    feature_columns = [
-        'total_matches_between',
-        'team1_wins_against_team2',
-        'team2_wins_against_team1',
-        'team1_win_percentage_against_team2',
-        'team2_win_percentage_against_team1',
-        'venue_total_matches',
-        'venue_avg_first_innings_score',
-        'venue_batting_first_win_percentage',
-        'team1_recent_form',
-        'team2_recent_form',
-        'team1_win_percentage_over_seasons',
-        'team2_win_percentage_over_seasons',
-        'team1_win_variance_over_seasons',
-        'team2_win_variance_over_seasons',
-        'team1_consistent_performance',
-        'team2_consistent_performance',
-        'team1_bat_vs_team2_bowl_runs',
-        'team1_bat_vs_team2_bowl_balls',
-        'team1_bat_vs_team2_bowl_dismissals',
-        'team1_bat_vs_team2_bowl_sr',
-        'team1_bat_vs_team2_bowl_avg',
-        'team1_bat_vs_team2_bowl_economy',
-        'team1_bat_vs_team2_bowl_frequency',
-        'team2_bat_vs_team1_bowl_runs',
-        'team2_bat_vs_team1_bowl_balls',
-        'team2_bat_vs_team1_bowl_dismissals',
-        'team2_bat_vs_team1_bowl_sr',
-        'team2_bat_vs_team1_bowl_avg',
-        'team2_bat_vs_team1_bowl_economy',
-        'team2_bat_vs_team1_bowl_frequency',
-        
-        'team1_current_streak_length',
-        'team2_current_streak_length',
-        'team1_avg_max_win_streak',
-        'team2_avg_max_win_streak',
-        'team1_avg_max_loss_streak',
-        'team2_avg_max_loss_streak',
-        'team1_pattern_consistency',
-        'team2_pattern_consistency'
+    from sklearn.preprocessing import LabelEncoder
+    # Define the columns to exclude from features
+    exclude_cols = [
+        'winner', 'match_id', 'team1', 'team2', 'season', 'venue', 
+        'toss_winner', 'toss_decision'
     ]
+    # Select only numeric columns and exclude the above
+    common_features = [col for col in features_df.columns if col not in exclude_cols and features_df[col].dtype in [np.int64, np.float64, np.int32, np.float32]]
     
-    # Add batter-bowler features
-    feature_columns.extend([
-        'team1_bat_vs_team2_bowl_runs', 'team1_bat_vs_team2_bowl_balls',
-        'team1_bat_vs_team2_bowl_dismissals', 'team1_bat_vs_team2_bowl_sr',
-        'team1_bat_vs_team2_bowl_avg', 'team1_bat_vs_team2_bowl_economy',
-        'team1_bat_vs_team2_bowl_frequency',
-        
-        'team2_bat_vs_team1_bowl_runs', 'team2_bat_vs_team1_bowl_balls',
-        'team2_bat_vs_team1_bowl_dismissals', 'team2_bat_vs_team1_bowl_sr',
-        'team2_bat_vs_team1_bowl_avg', 'team2_bat_vs_team1_bowl_economy',
-        'team2_bat_vs_team1_bowl_frequency',
-        
-    ])
-    
-    # Add categorical variables
-    categorical_columns = ['team1', 'team2', 'venue', 'toss_winner', 'toss_decision']
-    
-    # Initialize list to store all encoded feature names
-    encoded_features = []
-    
-    # One-hot encode categorical features
-    for col in categorical_columns:
-        # Get all unique values from both train and validation sets
-        all_values = pd.concat([train_data[col], validation_data[col]]).unique()
-        
-        # Create dummy variables for both sets using the same categories
-        train_dummies = pd.get_dummies(train_data[col], prefix=col)
-        val_dummies = pd.get_dummies(validation_data[col], prefix=col)
-        
-        # Add missing columns to each set
-        for value in all_values:
-            dummy_col = f"{col}_{value}"
-            if dummy_col not in train_dummies.columns:
-                train_dummies[dummy_col] = 0
-            if dummy_col not in val_dummies.columns:
-                val_dummies[dummy_col] = 0
-        
-        # Sort columns to ensure same order
-        dummy_cols = sorted(train_dummies.columns)
-        train_dummies = train_dummies[dummy_cols]
-        val_dummies = val_dummies[dummy_cols]
-        
-        # Add to encoded features list (excluding first dummy to avoid multicollinearity)
-        encoded_features.extend(dummy_cols[1:])
-        
-        # Add encoded features to respective datasets
-        train_data = pd.concat([train_data, train_dummies], axis=1)
-        validation_data = pd.concat([validation_data, val_dummies], axis=1)
-    
-    # Combine all features
-    all_features = feature_columns + encoded_features
-    
-    # Prepare final feature matrices and ensure proper data types
-    X_train = train_data[all_features].astype(float)
-    y_train = train_data['target'].astype(int)
-    X_val = validation_data[all_features].astype(float)
-    y_val = validation_data['target'].astype(int)
-    
-    # Scale features
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    
-    # Train and evaluate multiple models
-    model_results, best_model_name = train_and_evaluate_models(X_train, X_val, y_train, y_val)
-    
-    # Get the best model
-    if best_model_name == 'Gradient Boosting':
-        best_model = GradientBoostingClassifier(random_state=42)
-    elif best_model_name == 'SVM':
-        best_model = SVC(random_state=42, probability=True)
-    elif best_model_name == 'Decision Tree':
-        best_model = DecisionTreeClassifier(random_state=42)
-    elif best_model_name == 'RNN':
-        best_model = Sequential([
-            SimpleRNN(64, input_shape=(X_train.shape[1], 1)),
-            Dense(32, activation='relu'),
-            Dense(len(np.unique(y_train)), activation='softmax')
-        ])
-    elif best_model_name == 'GNN':
-        best_model = GNNModel(X_train.shape[1], 64, len(np.unique(y_train)))
-    else:  # LightGBM
-        best_model = lgb.LGBMClassifier(random_state=42)
-    
-    # Train the best model on the full training data
-    best_model.fit(X_train, y_train)
-    
-    return best_model, all_features
+    X = features_df[common_features]
+    y = features_df['winner']
+
+    # Encode target labels as integers
+    le = LabelEncoder()
+    y_encoded = le.fit_transform(y)
+
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded)
+
+    # XGBoost model
+    xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
+    xgb_model.fit(X_train, y_train)
+
+    # Evaluate
+    y_pred = xgb_model.predict(X_test)
+    print("XGBoost Accuracy:", accuracy_score(y_test, y_pred))
+    print("XGBoost Precision:", precision_score(y_test, y_pred, average='weighted'))
+    print("XGBoost Recall:", recall_score(y_test, y_pred, average='weighted'))
+    print("XGBoost F1 Score:", f1_score(y_test, y_pred, average='weighted'))
+
+    return xgb_model, common_features
+    # ... existing code ...
 
 # 5. Tournament Simulation
 def simulate_ipl_2025(model, features_df, common_features, teams, venues):
@@ -1674,49 +1167,94 @@ def estimate_win_probability(team1, team2, matches_df):
     else:
         return 1 - team_matches['team2_win_prob'].mean()
 
-
-
-
-def run_ipl_analysis(points_table_df):
-    # Load only matches and deliveries data
+# 6. Main function
+def main():
+    print("IPL 2025 Prediction System")
+    print("=========================")
+    
+    # Load data
     matches_df, deliveries_df = load_data()
-
+    
+    # Perform EDA
+    perform_eda(matches_df, deliveries_df)
+    
     # Engineer features
-    features_df = engineer_features(matches_df, deliveries_df) 
-
+    features_df = engineer_features(matches_df, deliveries_df)
+    
     # Train model
-    best_model, results = train_model(features_df)
-
-    # Use user-uploaded points_table_df
-    current_season_data = analyze_current_season(matches_df, points_table_df)
-    playoff_teams = predict_playoffs(matches_df, best_model, features_df, points_table_df)
-
-    # Prepare JSON-safe response
-    current_standings = [
-        {
-            "Team": str(row["Team"]),
-            "Points": int(row["Points"]),
-            "NRR": round(float(row["NRR"]), 3)
-        }
-        for row in points_table_df.to_dict(orient="records")
+    model, common_features = train_model(features_df)
+    
+    # Define IPL 2025 teams
+    teams = [
+        'Mumbai Indians', 'Chennai Super Kings', 'Royal Challengers Bangalore',
+        'Kolkata Knight Riders', 'Delhi Capitals', 'Sunrisers Hyderabad',
+        'Punjab Kings', 'Rajasthan Royals', 'Gujarat Titans', 'Lucknow Super Giants'
     ]
-
-    analysis = {
-        "Current Standings": current_standings,
-        "Team Analysis": {},
-        "Eliminated Teams": [str(team) for team in current_season_data['eliminated_teams']],
-        "Predicted Playoff Teams": [str(team) for team in playoff_teams]
+    
+    # Define home venues for teams
+    venues = {
+        'Mumbai Indians': 'Wankhede Stadium',
+        'Chennai Super Kings': 'M.A. Chidambaram Stadium',
+        'Royal Challengers Bangalore': 'M. Chinnaswamy Stadium',
+        'Kolkata Knight Riders': 'Eden Gardens',
+        'Delhi Capitals': 'Arun Jaitley Stadium',
+        'Sunrisers Hyderabad': 'Rajiv Gandhi International Stadium',
+        'Punjab Kings': 'Punjab Cricket Association Stadium',
+        'Rajasthan Royals': 'Sawai Mansingh Stadium',
+        'Gujarat Titans': 'Narendra Modi Stadium',
+        'Lucknow Super Giants': 'Bharat Ratna Shri Atal Bihari Vajpayee Ekana Cricket Stadium'
     }
+    
+    # Simulate IPL 2025
+    team_standings, playoff_teams = simulate_ipl_2025(model, features_df, common_features, teams, venues)
+    
+    # Print predictions
+    print("\nIPL 2025 Predictions:")
+    print("=====================")
+    
+    # Convert team standings to DataFrame for better visualization
+    standings_df = pd.DataFrame([
+        {'Team': team, 'Points': stats['points'], 'NRR': stats['nrr']}
+        for team, stats in team_standings.items()
+    ])
+    
+    # Sort by points and NRR
+    standings_df = standings_df.sort_values(['Points', 'NRR'], ascending=False).reset_index(drop=True)
+    
+    # Print final standings
+    print("\nPredicted League Standings:")
+    print(standings_df)
+    
+    # Print playoff teams
+    print("\nPredicted Playoff Teams:")
+    for i, team in enumerate(playoff_teams[:4], 1):
+        print(f"{i}. {team}")
+    
+    # Print final predictions
+    print("\nFinal Predictions:")
+    print(f"Winner: {playoff_teams[0]}")
+    print(f"Runner-up: {playoff_teams[1]}")
+    print(f"Second Runner-up: {playoff_teams[2]}")
+    print(f"Eliminator Participant: {playoff_teams[3]}")
+    
+    # Save predictions to CSV
+    standings_df.to_csv('ipl_2025_predictions.csv', index=False)
+    
+    print("\nPredictions saved to 'ipl_2025_predictions.csv'")
+    
+    # Create visualization of predictions
+    plt.figure(figsize=(12, 8))
+    colors = ['gold', 'silver', '#CD7F32', 'royalblue']
+    top_teams = standings_df.head(4)
+    sns.barplot(x='Team', y='Points', data=top_teams, palette=colors)
+    plt.title('IPL 2025 Predicted Top 4 Teams')
+    plt.ylabel('Predicted Points')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig('ipl_2025_top4_predictions.png')
+    
+    print("Visualization saved to 'ipl_2025_top4_predictions.png'")
 
-    for team in points_table_df['Team']:
-        if team in current_season_data['remaining_matches']:
-            data = current_season_data['remaining_matches'][team]
-            analysis["Team Analysis"][str(team)] = {
-                "Current Points": int(data['current_points']),
-                "NRR": round(float(data['nrr']), 3),
-                "Remaining Matches": int(data['matches_remaining']),
-                "Max Possible Points": int(data['max_possible_points']),
-                "Upcoming Opponents": [str(opponent) for opponent in data['opponents']]
-            }
-
-    return jsonable_encoder(analysis)
+if __name__ == "__main__":
+    main()
+    

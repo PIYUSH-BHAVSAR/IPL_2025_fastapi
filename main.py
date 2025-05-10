@@ -1,20 +1,24 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from last_try import run_ipl_analysis  # Ensure last_try.py is in the root folder
+import pandas as pd
+from last_try import run_ipl_analysis  # Ensure last_try.py is in the same directory
 
 app = FastAPI(
     title="IPL 2025 Prediction API",
-    description="Predicts league standings and playoff outcomes based on historical data and simulation logic.",
+    description="Upload a points table CSV to get playoff predictions.",
     version="1.0.0"
 )
 
-@app.get("/ipl2025")
-def get_ipl_prediction():
+@app.post("/ipl2025")
+async def upload_points_table(file: UploadFile = File(...)):
     try:
-        result = run_ipl_analysis()
+        # Read uploaded CSV into DataFrame
+        df = pd.read_csv(file.file)
+
+        # Call your updated analysis function
+        result = run_ipl_analysis(df)
+
         return JSONResponse(content=result)
+
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
